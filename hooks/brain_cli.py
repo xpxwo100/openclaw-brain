@@ -559,6 +559,9 @@ def extract_knowledge(tool_name: str, result: Any) -> List[Dict[str, Any]]:
 
 
 def remember_tool(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if payload.get("trigger_consolidation") is None:
+        payload = {**payload, "trigger_consolidation": True}
+
     brain = load_brain(payload)
     tool = payload.get("tool", {})
     tool_name = tool.get("name") or tool.get("tool") or "unknown"

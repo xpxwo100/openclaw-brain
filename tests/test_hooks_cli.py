@@ -11,8 +11,10 @@ CLI_PATH = PROJECT_ROOT / "hooks" / "brain_cli.py"
 def run_cli(payload):
     result = subprocess.run(
         [sys.executable, str(CLI_PATH)],
-        input=json.dumps(payload),
+        input=json.dumps(payload, ensure_ascii=False),
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         cwd=PROJECT_ROOT,
         check=True,
