@@ -1,0 +1,17 @@
+{
+  "id": "brain-prompt",
+  "name": "Brain Prompt Injector",
+  "description": "Injects compact recalled memory context before prompt build.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean" },
+      "backend": { "type": "string", "enum": ["jsonl", "lancedb"] },
+      "limit": { "type": "integer", "minimum": 1, "maximum": 20 },
+      "recentWindow": { "type": "integer", "minimum": 1, "maximum": 50 },
+      "minQueryLength": { "type": "integer", "minimum": 1, "maximum": 50 },
+      "heading": { "type": "string" }
+    }
+  }
+}

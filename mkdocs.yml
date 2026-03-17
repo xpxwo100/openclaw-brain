@@ -1,0 +1,18 @@
+site_name: OpenClaw Brain
+site_description: Multi-layer memory system for OpenClaw
+site_url: https://github.com/openclaw/openclaw-brain
+repo_url: https://github.com/openclaw/openclaw-brain
+repo_name: openclaw/openclaw-brain
+
+nav:
+  - Home (EN): README.md
+  - Architecture (EN): docs/architecture.md
+  - Deployment (EN): DEPLOYMENT.md
+  - 中文首页: README.zh-CN.md
+  - 架构说明: docs/architecture.zh-CN.md
+  - 部署指南: DEPLOYMENT.zh-CN.md
+  - Contributing: CONTRIBUTING.md
+  - Security: SECURITY.md
+
+theme:
+  name: material

@@ -1,163 +1,159 @@
 #!/usr/bin/env python3
-"""
-OpenClaw Brain 验证脚本
-用于 autoresearch 循环中的机械验证
-"""
+"""Verification script for the refactored OpenClaw Brain project."""
 
-import sys
+from __future__ import annotations
+
 import os
+import subprocess
+import sys
 from pathlib import Path
 
-# 修复 Windows 控制台编码问题
-if sys.platform == 'win32':
+
+if sys.platform == "win32":
     try:
-        sys.stdout.reconfigure(encoding='utf-8')
-    except:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
         pass
 
+
+PROJECT_ROOT = Path(__file__).parent
+
+
 def verify_structure():
-    """验证项目结构完整性"""
-    project_root = Path(__file__).parent
-    
-    required_dirs = [
-        'brain',
-        'models', 
-        'storage',
-        'hooks',
-        'tests',
-        'examples',
-        'docs'
-    ]
-    
+    required_dirs = ["brain", "models", "storage", "hooks", "plugins", "tests", "examples", "docs"]
     required_files = [
-        'README.md',
-        'requirements.txt',
-        'LICENSE',
-        'GOAL.md'
+        "README.md",
+        "README.zh-CN.md",
+        "requirements.txt",
+        "LICENSE",
+        "CONTRIBUTING.md",
+        "SECURITY.md",
+        "DEPLOYMENT.md",
+        "DEPLOYMENT.zh-CN.md",
+        "mkdocs.yml",
+        "docs/architecture.md",
+        "docs/architecture.zh-CN.md",
+        "hooks/brain-ingest/handler.js",
+        "hooks/brain-ingest/HOOK.md",
+        "plugins/brain-prompt/index.js",
+        "plugins/brain-prompt/README.md",
+        "plugins/brain-prompt/package.json",
     ]
-    
     errors = []
-    
-    # 检查目录
-    for dir_name in required_dirs:
-        dir_path = project_root / dir_name
-        if not dir_path.exists():
-            errors.append(f"缺少目录：{dir_name}")
-        elif not dir_path.is_dir():
-            errors.append(f"{dir_name} 不是目录")
-    
-    # 检查文件
-    for file_name in required_files:
-        file_path = project_root / file_name
-        if not file_path.exists():
-            errors.append(f"缺少文件：{file_name}")
-    
+
+    for name in required_dirs:
+        path = PROJECT_ROOT / name
+        if not path.exists():
+            errors.append(f"missing directory: {name}")
+        elif not path.is_dir():
+            errors.append(f"not a directory: {name}")
+
+    for name in required_files:
+        path = PROJECT_ROOT / name
+        if not path.exists():
+            errors.append(f"missing file: {name}")
+
     return errors
 
+
 def verify_modules():
-    """验证核心模块是否可导入"""
     errors = []
-    
     required_modules = [
-        'brain',
-        'brain.attention',
-        'brain.working_memory',
-        'brain.hippocampus',
-        'brain.episodic',
-        'brain.semantic',
-        'brain.consolidation',
-        'brain.retrieval'
+        "brain",
+        "brain.base",
+        "brain.attention",
+        "brain.working_memory",
+        "brain.hippocampus",
+        "brain.episodic",
+        "brain.semantic",
+        "brain.retrieval",
+        "brain.consolidation",
+        "brain.orchestrator",
     ]
-    
-    sys.path.insert(0, str(Path(__file__).parent))
-    
+
+    sys.path.insert(0, str(PROJECT_ROOT))
     for module in required_modules:
         try:
             __import__(module)
-        except ImportError as e:
-            errors.append(f"模块导入失败：{module} - {str(e)}")
-        except Exception as e:
-            errors.append(f"模块错误：{module} - {str(e)}")
-    
+        except Exception as exc:
+            errors.append(f"module import failed: {module} - {exc}")
     return errors
 
+
 def verify_tests():
-    """验证测试是否可运行"""
-    import subprocess
-    
-    test_dir = Path(__file__).parent / 'tests'
-    if not test_dir.exists():
-        return ["测试目录不存在"]
-    
-    # 尝试运行测试
     try:
         result = subprocess.run(
-            ['pytest', 'tests/', '-v', '--tb=short'],
-            cwd=Path(__file__).parent,
+            [sys.executable, "-m", "pytest", "-q"],
+            cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
-            timeout=60
+            timeout=60,
         )
-        if result.returncode != 0:
-            return [f"测试失败：{result.stdout}\n{result.stderr}"]
     except subprocess.TimeoutExpired:
-        return ["测试超时 (60s)"]
-    except FileNotFoundError:
-        # pytest 未安装，跳过
-        pass
-    except Exception as e:
-        return [f"测试运行错误：{str(e)}"]
-    
+        return ["tests timed out (60s)"]
+    except Exception as exc:
+        return [f"failed to run tests: {exc}"]
+
+    if result.returncode != 0:
+        return [f"tests failed:\n{result.stdout}\n{result.stderr}"]
     return []
 
-def main():
-    """主验证函数"""
+
+def verify_plugin_import():
+    try:
+        result = subprocess.run(
+            [
+                "node",
+                "--input-type=module",
+                "-e",
+                "import(process.env.pluginPath).then((m)=>{ if (!m.default) throw new Error('missing default export'); console.log('ok'); })",
+            ],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "pluginPath": (PROJECT_ROOT / "plugins" / "brain-prompt" / "index.js").resolve().as_uri()},
+        )
+    except FileNotFoundError:
+        return ["node not found for plugin import check"]
+    except subprocess.TimeoutExpired:
+        return ["plugin import check timed out (30s)"]
+    except Exception as exc:
+        return [f"failed to run plugin import check: {exc}"]
+
+    if result.returncode != 0:
+        return [f"plugin import failed:\n{result.stdout}\n{result.stderr}"]
+    return []
+
+
+def main() -> int:
     print("=" * 60)
     print("OpenClaw Brain Verification Report")
     print("=" * 60)
-    
+
     all_errors = []
-    
-    # 结构验证
-    print("\n[1] Verifying project structure...")
-    errors = verify_structure()
-    if errors:
-        for err in errors:
-            print(f"  [X] {err}")
-        all_errors.extend(errors)
-    else:
-        print("  [OK] Project structure complete")
-    
-    # 模块验证
-    print("\n[2] Verifying module imports...")
-    errors = verify_modules()
-    if errors:
-        for err in errors:
-            print(f"  [X] {err}")
-        all_errors.extend(errors)
-    else:
-        print("  [OK] All modules can be imported")
-    
-    # 测试验证
-    print("\n[3] Running test suite...")
-    errors = verify_tests()
-    if errors:
-        for err in errors:
-            print(f"  [X] {err}")
-        all_errors.extend(errors)
-    else:
-        print("  [OK] Tests passed")
-    
-    # 总结
+    for title, fn in [
+        ("structure", verify_structure),
+        ("imports", verify_modules),
+        ("plugin", verify_plugin_import),
+        ("tests", verify_tests),
+    ]:
+        print(f"\n[{title}]")
+        errors = fn()
+        if errors:
+            all_errors.extend(errors)
+            for error in errors:
+                print(f"  [X] {error}")
+        else:
+            print("  [OK]")
+
     print("\n" + "=" * 60)
     if all_errors:
-        print(f"Verification FAILED: {len(all_errors)} errors")
-        for err in all_errors:
-            print(f"  - {err}")
+        print(f"Verification FAILED: {len(all_errors)} error(s)")
         return 1
-    else:
-        print("[OK] Verification PASSED!")
-        return 0
+    print("[OK] Verification PASSED")
+    return 0
 
-if __name__ == '__main__':
-    sys.exit(main())
+
+if __name__ == "__main__":
+    raise SystemExit(main())

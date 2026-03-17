@@ -1,316 +1,317 @@
-﻿# 🧠 OpenClaw Brain
+# OpenClaw Brain
 
-**类脑记忆系统 for OpenClaw** - 模拟人脑的多层级记忆、注意力门控与记忆巩固机制
+> A multi-layer memory system for OpenClaw, rebuilt as an actual engineering project instead of a pile of neuroscience metaphors.
 
-> "The true nature of memory is not to remember, but to reconstruct." 
+[简体中文文档 / Chinese docs](./README.zh-CN.md)
 
----
+## Overview
 
-## 🎯 项目目标
+OpenClaw Brain provides a structured memory pipeline for OpenClaw agents:
 
-构建一个受人脑启发的记忆系统，让 OpenClaw 能够：
-- **选择性注意**：像人脑一样过滤无关信息
-- **多级存储**：工作记忆 → 短期记忆 → 长期记忆
-- **睡眠巩固**：定期整合、压缩、强化关键记忆
-- **联想提取**：基于情境、情绪、关联度的智能检索
-- **自然遗忘**：艾宾浩斯曲线驱动的遗忘机制
+- **Attention gating** decides what is worth remembering
+- **Working memory** keeps short-lived task state
+- **Hippocampus** encodes recent candidate memories
+- **Episodic memory** stores events and experiences
+- **Semantic memory** stores facts, rules, and preferences
+- **Retrieval + context building** turns memory into prompt-ready recall blocks
+- **Persistence backends** support JSONL and LanceDB
+- **OpenClaw hooks/plugins** wire the Brain into real message and tool flows
 
----
-
-## 🏗️ 系统架构
-
-```
-┌─────────────────────────────────────────────────────┐
-│  感知层 (Perception)                                │
-│  (消息、工具输出、文件变化、定时触发)                │
-└─────────────────────────────────────────────────────┘
-                        ↓
-┌─────────────────────────────────────────────────────┐
-│  注意力门控 (Attention Gate)                        │
-│  - 优先级过滤 (P0/P1/P2)                            │
-│  - 情绪标记 (用户强调/纠正/重复)                    │
-│  - 关联触发 (与现有记忆强相关)                      │
-└─────────────────────────────────────────────────────┘
-                        ↓
-        ┌───────────────┴───────────────┐
-        ↓                               ↓
-┌───────────────────┐           ┌───────────────────┐
-│  工作记忆区       │           │  快速通道         │
-│  (Working Memory) │           │  (Reflex)         │
-│  - 容量：~20 条     │           │  - 高频模式匹配   │
-│  - 临时变量/状态  │           │  - 自动化响应     │
-└───────────────────┘           └───────────────────┘
-                        ↓
-┌─────────────────────────────────────────────────────┐
-│  海马体 (Hippocampus)                               │
-│  - 新事件快速编码                                   │
-│  - 模式识别与关联                                   │
-│  - 睡眠时巩固到长期记忆                             │
-└─────────────────────────────────────────────────────┘
-                        ↓
-        ┌───────────────┴───────────────┐
-        ↓                               ↓
-┌───────────────────┐           ┌───────────────────┐
-│  情景记忆         │           │  语义记忆         │
-│  (Episodic)       │           │  (Semantic)       │
-│  - 会话历史       │           │  - 事实知识       │
-│  - 用户偏好       │           │  - 技能/规则      │
-│  - 时间戳 + 情境  │           │  - 概念网络       │
-│  - 向量化 (RAG)   │           │  - 结构化存储     │
-└───────────────────┘           └───────────────────┘
-                        ↓
-┌─────────────────────────────────────────────────────┐
-│  记忆巩固循环 (Consolidation Loop)                  │
-│  - 每 4 小时：提取、向量化、关联                      │
-│  - 每天：睡眠重放、整合、衰减                       │
-│  - 艾宾浩斯遗忘曲线                                 │
-└─────────────────────────────────────────────────────┘
-```
+This project is designed to run on **Windows, Linux, and macOS**.
 
 ---
 
-## 📁 项目结构
+## Table of Contents
 
-```
+- [Why this project exists](#why-this-project-exists)
+- [Features](#features)
+- [Project structure](#project-structure)
+- [Quick start](#quick-start)
+- [OpenClaw integration](#openclaw-integration)
+- [Storage backends](#storage-backends)
+- [Cross-platform deployment](#cross-platform-deployment)
+- [Documentation](#documentation)
+- [Development](#development)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## Why this project exists
+
+The earlier version had the right idea but weak execution:
+
+- concepts were richer than boundaries
+- memory objects were inconsistent across modules
+- no single orchestration entry point existed
+- retrieval and consolidation were not wired into a coherent pipeline
+
+This refactor fixes that by introducing:
+
+- a **canonical memory model**: `MemoryRecord`
+- a **single orchestration entry point**: `OpenClawBrain`
+- a **prompt-oriented context builder**
+- **persistent backends** for real deployments
+- **OpenClaw hooks/plugins** for production-style usage
+
+---
+
+## Features
+
+### Core memory system
+- Unified memory schema with `MemoryRecord`
+- Attention-based ingestion
+- Working memory with TTL and capacity control
+- Hippocampus-style fast encoding buffer
+- Episodic and semantic stores
+- Consolidation and memory promotion
+- Multi-factor retrieval and reranking
+- Prompt-ready context building with duplicate suppression
+
+### Persistence
+- `jsonl` backend for transparency and debugging
+- `lancedb` backend for scalable retrieval workflows
+- Save/load support through `OpenClawBrain.save()` and `OpenClawBrain.load()`
+
+### OpenClaw integration
+- `hooks/brain-ingest` for unified message + tool ingestion
+- `plugins/brain-prompt` for `before_prompt_build` prompt injection
+
+### Cross-platform support
+- PowerShell-friendly instructions for Windows
+- POSIX shell instructions for Linux/macOS
+- Path guidance for both local development and OpenClaw workspace deployment
+
+---
+
+## Project structure
+
+```text
 openclaw-brain/
-├── README.md                    # 项目说明
-├── LICENSE                      # MIT License
-├── requirements.txt             # Python 依赖
-├── setup.py                     # 安装脚本
-│
-├── brain/                       # 核心模块
-│   ├── __init__.py
-│   ├── attention.py             # 注意力门控
-│   ├── working_memory.py        # 工作记忆区
-│   ├── hippocampus.py           # 海马体（编码/巩固）
-│   ├── episodic.py              # 情景记忆
-│   ├── semantic.py              # 语义记忆
-│   ├── consolidation.py         # 记忆巩固循环
-│   └── retrieval.py             # 联想提取
-│
-├── models/                      # 数据模型
-│   ├── __init__.py
-│   ├── memory.py                # 记忆单元基类
-│   ├── event.py                 # 事件模型
-│   └── association.py           # 关联关系
-│
-├── storage/                     # 存储后端
-│   ├── __init__.py
-│   ├── jsonl_store.py          # JSONL 文件存储
-│   ├── vector_store.py          # 向量数据库（LanceDB）
-│   └── sql_store.py             # 关系型存储（可选）
-│
-├── hooks/                       # OpenClaw 集成
-│   ├── __init__.py
-│   ├── on_message.py            # 消息 Hook
-│   ├── on_tool_call.py          # 工具调用 Hook
-│   ├── heartbeat.py             # 心跳 Hook
-│   └── cron_jobs.py             # 定时任务
-│
-├── tests/                       # 测试
-│   ├── __init__.py
-│   ├── test_attention.py
-│   ├── test_hippocampus.py
-│   └── test_consolidation.py
-│
-├── examples/                    # 示例
-│   ├── basic_usage.py
-│   ├── custom_attention_gate.py
-│   └── sleep_consolidation.py
-│
-└── docs/                        # 文档
-    ├── architecture.md          # 架构设计
-    ├── api.md                   # API 参考
-    ├── neuroscience.md          # 神经科学原理
-    └── openclaw_integration.md  # OpenClaw 集成指南
+├─ brain/                     # Core memory pipeline
+│  ├─ base.py                 # Canonical memory model
+│  ├─ attention.py            # Attention gate
+│  ├─ working_memory.py       # Short-term memory
+│  ├─ hippocampus.py          # Fast encoding buffer
+│  ├─ episodic.py             # Episodic store
+│  ├─ semantic.py             # Semantic store
+│  ├─ retrieval.py            # Recall and reranking
+│  ├─ consolidation.py        # Promotion / forgetting primitives
+│  ├─ context.py              # Prompt-oriented recall builder
+│  └─ orchestrator.py         # OpenClawBrain entry point
+├─ storage/                   # Persistence backends
+├─ hooks/                     # OpenClaw hooks + Python bridge
+├─ plugins/brain-prompt/      # OpenClaw prompt-injection plugin
+├─ docs/                      # Architecture and deployment docs
+├─ examples/                  # Usage examples
+├─ tests/                     # Test suite
+└─ verify.py                  # Structure/import/test verification
 ```
 
 ---
 
-## 🚀 快速开始
+## Quick start
 
-### 安装
+### Requirements
+
+- Python **3.9+**
+- Node.js **18+** recommended for OpenClaw plugin workflows
+- OpenClaw runtime is **optional** and only needed for hook/plugin integration
+
+### Install (development)
+
+#### Windows PowerShell
+
+```powershell
+cd C:\path\to\openclaw-brain
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+#### Linux / macOS
 
 ```bash
-pip install openclaw-brain
+cd /path/to/openclaw-brain
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### 基础用法
+### Basic usage
 
 ```python
 from brain import OpenClawBrain
 
-# 初始化大脑
-brain = OpenClawBrain(
-    workspace="C:/Users/Administrator.xpxwo/.openclaw/workspace",
-    attention_threshold=0.7,
-    consolidation_interval_hours=4
+brain = OpenClawBrain(attention_threshold=0.4)
+
+brain.remember(
+    "Remember that the user prefers being called Chicken Bro",
+    context={"kind": "preference", "source": "profile"},
+    importance=0.9,
 )
 
-# 添加记忆（注意力门控自动判断是否重要）
-brain.remember("用户喜欢被叫'<BOT_NAME>'", context={"source": "user_profile"})
+results = brain.recall("preferred nickname", limit=5)
+for item in results:
+    print(item.memory.content)
 
-# 工作记忆区（临时存储）
-brain.working.add("临时变量", value=42)
-
-# 提取记忆（联想检索）
-memories = brain.remember("用户偏好", mode="semantic")
-
-# 触发巩固（通常在定时任务中）
-brain.consolidate()
-```
-
----
-
-## 🧠 核心机制
-
-### 1. 注意力门控 (Attention Gate)
-
-模拟人脑的选择性注意，决定哪些信息值得进入记忆：
-
-```python
-from brain.attention import AttentionGate
-
-gate = AttentionGate(
-    priority_keywords=["记住", "重要", "注意", "P0"],
-    emotional_triggers=["纠正", "否定", "强调"],
-    association_threshold=0.8
+context_block = brain.build_context(
+    query="How should I address the user?",
+    recent_messages=["Remember that the user prefers being called Chicken Bro"],
+    recent_message_ids=["m1"],
+    limit=3,
 )
 
-should_remember = gate.should_pass(
-    text="记住，我喜欢用 <MODEL_NAME> 处理简单任务",
-    context={"user": "<USER_NAME>", "timestamp": "2026-03-17T04:52"}
-)
-# 返回：True (包含"记住"关键词)
-```
-
-### 2. 工作记忆区 (Working Memory)
-
-容量有限的临时存储区，模拟人类的工作记忆：
-
-```python
-from brain.working_memory import WorkingMemory
-
-wm = WorkingMemory(capacity=20)
-
-# 添加项目
-wm.add("用户当前任务", "创建 OpenClaw 记忆系统")
-
-# 获取所有项目（FIFO + 重要性排序）
-items = wm.get_all()
-
-# 复述（将重要项目转入长期记忆）
-wm.rehearse("用户当前任务", target="semantic")
-```
-
-### 3. 睡眠巩固 (Sleep Consolidation)
-
-定期整合、压缩、强化记忆：
-
-```python
-from brain.consolidation import SleepConsolidation
-
-consolidator = SleepConsolidation(brain)
-
-# 执行巩固（通常在凌晨 3 点）
-consolidator.run()
-# - 重放当天事件
-# - 合并重复记忆
-# - 应用艾宾浩斯衰减
-# - 修剪过期临时记忆
+print(context_block["context_text"])
 ```
 
 ---
 
-## 📊 记忆生命周期
+## OpenClaw integration
 
-```
-[感知] → [注意力过滤] → [工作记忆] → [海马体编码] → [情景/语义记忆]
-                              ↓                      ↓
-                        (容量限制)            [睡眠巩固]
-                              ↓                      ↓
-                        [遗忘曲线] ←────────── [联想提取]
+This project includes two integration surfaces:
+
+### 1. Unified ingest hook
+Persists important inbound messages, turns user messages into compact preference/rule/fact/task memories, extracts assistant execution memory (commitments, results, decisions, current state), records tool usage as compact episodic memory, and extracts semantic knowledge from tool results.
+
+Important runtime note: `hippocampus` is a staging buffer, not a forever-growing event log. After consolidation, durable history lives primarily in `episodic` and `semantic`.
+
+- Path: `hooks/brain-ingest`
+- Doc: [`hooks/brain-ingest/HOOK.md`](./hooks/brain-ingest/HOOK.md)
+
+### 2. Prompt injection plugin
+Injects compact memory recall into system-prompt space during `before_prompt_build`.
+
+- Path: `plugins/brain-prompt`
+- Doc: [`plugins/brain-prompt/README.md`](./plugins/brain-prompt/README.md)
+
+### Intended runtime flow
+
+```text
+message/tool events
+  -> OpenClawBrain persisted store
+  -> build_context(query, recent_messages, ...)
+  -> prependSystemContext
+  -> model answer
 ```
 
-### 遗忘曲线实现
+---
+
+## Storage backends
+
+### JSONL
+Use JSONL when you want:
+
+- easy inspection
+- easy backup
+- zero-database local development
+- deterministic debug workflows
+
+### LanceDB
+Use LanceDB when you want:
+
+- larger persistent stores
+- future vector retrieval workflows
+- cleaner evolution toward semantic search
+
+### Example
 
 ```python
-from brain.forgetting import EbbinghausCurve
+from brain import OpenClawBrain
 
-curve = EbbinghausCurve()
+brain = OpenClawBrain(attention_threshold=0.1)
+brain.remember("The user likes concise answers", context={"kind": "preference"}, importance=0.9)
 
-# 计算记忆保留率（小时后）
-retention = curve.retention(hours=24)  # ~35%
-retention = curve.retention(hours=168)  # ~15% (一周后)
-
-# 应用衰减
-memory.strength *= curve.retention(hours_since_last_review)
+brain.save("./data/brain-jsonl", backend="jsonl")
+brain.save("./data/brain-lancedb", backend="lancedb")
 ```
 
 ---
 
-## 🔧 配置示例
+## Cross-platform deployment
 
-```yaml
-# config.yaml
-brain:
-  working_memory:
-    capacity: 20
-    ttl_minutes: 30
+Detailed guide: [`DEPLOYMENT.md`](./DEPLOYMENT.md)
 
-  attention:
-    priority_threshold: 0.7
-    emotional_boost: 1.5
-    association_weight: 0.3
+Supported targets:
 
-  consolidation:
-    interval_hours: 4
-    sleep_time: "03:00"
-    ebbinghaus_halflife_hours: 24
+- **Windows**: PowerShell, local OpenClaw workspace deployment
+- **Linux**: local/server deployment, cron-friendly workflows
+- **macOS**: local development and OpenClaw desktop-style deployments
 
-  storage:
-    type: "jsonl"  # 或 "lancedb", "sqlite"
-    path: "./memory"
-    vector_model: "BAAI/bge-m3"
-```
+Key portability rules:
+
+- avoid hardcoding path separators in your own config
+- keep Python and Node available in `PATH`
+- prefer virtual environments per machine
+- keep persistent stores outside ephemeral temp directories
 
 ---
 
-## 🧪 测试
+## Documentation
+
+### English
+- [Architecture](./docs/architecture.md)
+- [Deployment Guide](./DEPLOYMENT.md)
+- [Contributing](./CONTRIBUTING.md)
+- [Security](./SECURITY.md)
+
+### 中文
+- [中文 README](./README.zh-CN.md)
+- [架构说明](./docs/architecture.zh-CN.md)
+- [部署指南](./DEPLOYMENT.zh-CN.md)
+
+---
+
+## Development
+
+### Run tests
 
 ```bash
-pytest tests/ -v
+python -m pytest -q
+```
+
+### Verify structure, imports, plugin load, and tests
+
+```bash
+python verify.py
+```
+
+### Package install (editable)
+
+```bash
+pip install -e .
 ```
 
 ---
 
-## 📚 文档
+## Roadmap
 
-- [架构设计](docs/architecture.md)
-- [API 参考](docs/api.md)
-- [神经科学原理](docs/neuroscience.md)
-- [OpenClaw 集成](docs/openclaw_integration.md)
+Near-term priorities:
 
----
-
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request！
+- deeper LanceDB/vector retrieval integration
+- stronger semantic extraction pipelines
+- more production-grade repository abstractions
+- richer OpenClaw configuration examples
+- CI workflows for Windows/Linux/macOS validation
 
 ---
 
-## 📄 License
+## Contributing
 
-MIT License
+Pull requests are welcome.
+
+Before opening one, please:
+
+1. run tests
+2. run `python verify.py`
+3. keep docs updated when behavior changes
+4. avoid breaking the public API without documenting it clearly
+
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ---
 
-## 🙏 致谢
+## License
 
-- OpenClaw 团队
-- 认知神经科学研究
-- 记忆心理学理论
-
----
-
-**🌟 让 AI 像人一样记忆，像人一样遗忘，像人一样学习。**
+MIT. See [`LICENSE`](./LICENSE).

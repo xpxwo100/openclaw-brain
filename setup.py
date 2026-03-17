@@ -1,14 +1,14 @@
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 
 with open("README.md", "r", encoding="utf-8") as f:
     long_description = f.read()
 
 setup(
     name="openclaw-brain",
-    version="0.1.0",
+    version="0.2.0",
     author="OpenClaw Brain Contributors",
     author_email="openclaw-brain@example.com",
-    description="🧠 类脑记忆系统 for OpenClaw - 模拟人脑的多层级记忆、注意力门控与记忆巩固机制",
+    description="Refactored multi-layer memory system for OpenClaw",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/openclaw/openclaw-brain",
@@ -26,7 +26,6 @@ setup(
     ],
     python_requires=">=3.9",
     install_requires=[
-        "openclaw>=2026.3.13",
         "lancedb>=0.5.0",
         "sentence-transformers>=2.3.0",
         "pyyaml>=6.0",
@@ -34,6 +33,9 @@ setup(
         "python-dateutil>=2.8.2",
     ],
     extras_require={
+        "openclaw": [
+            "openclaw>=2026.3.13",
+        ],
         "dev": [
             "pytest>=7.4.0",
             "pytest-asyncio>=0.21.0",
@@ -41,6 +43,6 @@ setup(
             "ruff>=0.1.0",
             "mkdocs>=1.5.0",
             "mkdocs-material>=9.0.0",
-        ],
+        ]
     },
-)
+}
