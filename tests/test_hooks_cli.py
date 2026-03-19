@@ -30,7 +30,7 @@ def test_brain_cli_explain_store_defaults_to_workspace_data_path():
     assert result["resolved_store_root"] == str(PROJECT_ROOT.parent.parent / "data" / "openclaw-brain")
 
 
-def test_brain_cli_remember_message_extracts_preference_semantically(tmp_path):
+def test_brain_cli_remember_message_keeps_first_preference_as_episodic_evidence(tmp_path):
     store_root = tmp_path / "hook-store"
     result = run_cli(
         {
@@ -51,7 +51,7 @@ def test_brain_cli_remember_message_extracts_preference_semantically(tmp_path):
     )
 
     assert result["remembered"] is True
-    assert "preference" in result["memory_kinds"]
+    assert "preference" not in result["memory_kinds"]
     assert result["resolved_store_root"] == str(store_root)
     assert (store_root / "semantic.jsonl").exists()
     semantic_rows = (store_root / "semantic.jsonl").read_text(encoding="utf-8")

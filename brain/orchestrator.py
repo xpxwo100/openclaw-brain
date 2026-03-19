@@ -140,6 +140,8 @@ class OpenClawBrain:
         limit: int = 5,
         context: Optional[Dict[str, Any]] = None,
         emotion: Optional[str] = None,
+        max_chars: Optional[int] = None,
+        max_estimated_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
         recalled = self.recall(query=query, limit=max(limit * 4, 10), context=context, emotion=emotion)
         if self._is_progress_query(query):
@@ -152,6 +154,8 @@ class OpenClawBrain:
             recent_messages=recent_messages,
             recent_message_ids=recent_message_ids,
             max_items=limit,
+            max_chars=max_chars,
+            max_estimated_tokens=max_estimated_tokens,
         )
 
     def consolidate(self) -> Dict[str, Any]:

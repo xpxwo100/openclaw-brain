@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,15 +15,70 @@ const DEFAULT_CONFIG = {
   limit: 4,
   recentWindow: 8,
   minQueryLength: 2,
+  maxChars: 900,
+  maxEstimatedTokens: 240,
   heading: "[Brain Recall]",
   cliPath: null,
   projectRoot: null,
 };
 
+function readDirectPluginConfig(pluginConfig) {
+  if (!pluginConfig || typeof pluginConfig !== "object" || Array.isArray(pluginConfig)) return {};
+
+  const direct = {};
+  for (const key of Object.keys(DEFAULT_CONFIG)) {
+    if (pluginConfig[key] !== undefined) direct[key] = pluginConfig[key];
+  }
+  return direct;
+}
+
+function readNestedPluginConfig(pluginConfig) {
+  return (
+    pluginConfig?.plugins?.entries?.["brain-prompt"]?.config
+    || pluginConfig?.plugins?.entries?.["brain-prompt"]
+    || pluginConfig?.plugins?.["brain-prompt"]?.config
+    || pluginConfig?.plugins?.["brain-prompt"]
+    || pluginConfig?.["plugins.entries.brain-prompt.config"]
+    || {}
+  );
+}
+
+function findOpenClawConfigPath() {
+  let current = __dirname;
+  for (let i = 0; i < 8; i += 1) {
+    const candidate = path.join(current, "openclaw.json");
+    if (existsSync(candidate)) return candidate;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
+
+let cachedDiskConfig = null;
+
+function readPluginConfigFromDisk() {
+  if (cachedDiskConfig) {
+    return readNestedPluginConfig(cachedDiskConfig);
+  }
+
+  const configPath = findOpenClawConfigPath();
+  if (!configPath) return {};
+
+  try {
+    cachedDiskConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    return readNestedPluginConfig(cachedDiskConfig);
+  } catch {
+    return {};
+  }
+}
+
 function normalizeConfig(pluginConfig) {
   return {
     ...DEFAULT_CONFIG,
-    ...(pluginConfig || {}),
+    ...readPluginConfigFromDisk(),
+    ...readNestedPluginConfig(pluginConfig),
+    ...readDirectPluginConfig(pluginConfig),
   };
 }
 
@@ -173,6 +229,21 @@ function normalizeHeading(text, fallback) {
   return trimmed.startsWith("[") ? trimmed : `[${trimmed}]`;
 }
 
+function summarizeRecallItems(items, limit = 3) {
+  if (!Array.isArray(items) || items.length === 0) return "";
+
+  return items
+    .slice(0, limit)
+    .map((item) => {
+      const kind = item?.kind ? `${String(item.kind)}:` : "";
+      const text = String(item?.text || "").replace(/\s+/g, " ").trim();
+      const preview = text.length > 72 ? `${text.slice(0, 69)}...` : text;
+      return `${kind}${preview}`;
+    })
+    .filter(Boolean)
+    .join(" | ");
+}
+
 const plugin = {
   id: "brain-prompt",
   name: "Brain Prompt Injector",
@@ -199,6 +270,8 @@ const plugin = {
           recent_messages: recentMessages,
           recent_message_ids: recentMessageIds,
           limit: cfg.limit,
+          max_chars: cfg.maxChars,
+          max_estimated_tokens: cfg.maxEstimatedTokens,
           context: {
             sessionKey: ctx?.sessionKey,
             channel: ctx?.channel,
@@ -206,6 +279,9 @@ const plugin = {
         }, cfg);
 
         if (!result?.context_text) {
+          api.logger?.debug?.(
+            `brain-prompt recall empty (backend: ${cfg.backend}, query: ${JSON.stringify(query)}, mode: ${result?.recall_mode || "unknown"}, candidates: ${result?.candidate_count || 0}, store: ${result?.resolved_store_root || "brain store"})`,
+          );
           return {};
         }
 
@@ -214,9 +290,10 @@ const plugin = {
         const finalText = contextText.startsWith(heading)
           ? contextText
           : contextText.replace(/^\[Brain Recall\]/, heading);
+        const preview = summarizeRecallItems(result?.items, 3);
 
-        api.logger?.debug?.(
-          `brain-prompt injected ${result.count || 0} recall items from ${result.resolved_store_root || "brain store"}`,
+        api.logger?.info?.(
+          `brain-prompt injected recall (backend: ${cfg.backend}, mode: ${result?.recall_mode || "unknown"}, query: ${JSON.stringify(query)}, candidates: ${result?.candidate_count || 0}, selected: ${result?.count || 0}, chars: ${result?.context_chars || finalText.length}, tokens: ${result?.estimated_tokens || 0}, store: ${result?.resolved_store_root || "brain store"}${preview ? `, preview: ${preview}` : ""})`,
         );
         return {
           prependSystemContext: finalText,

@@ -6,6 +6,8 @@
  */
 
 const { callBrainCli, resolveStoreRoot } = require('../_lib/brain-bridge.js');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const log = {
   info: (...args) => console.info('[brain-ingest]', ...args),
@@ -17,6 +19,7 @@ function writeDebug() {}
 
 const DEFAULT_CONFIG = {
   enabled: true,
+  backend: 'jsonl',
   attention_threshold: 0.7,
   working_memory_limit: 10,
   auto_consolidate: true,
@@ -27,6 +30,28 @@ const DEFAULT_CONFIG = {
   knowledge_threshold: 0.5,
   persist_all_messages: true,
 };
+
+const KEYWORDS = {
+  remember: 0.8,
+  important: 0.9,
+  task: 0.7,
+  deadline: 0.9,
+  meeting: 0.6,
+  note: 0.7,
+  '记住': 0.8,
+  '重要': 0.9,
+  '任务': 0.7,
+  '截止': 0.9,
+  '会议': 0.6,
+  '开会': 0.7,
+  '有会': 0.7,
+  '喜欢': 0.6,
+};
+
+const ASSISTANT_MEMORY_RE = /(我会|我将|稍后|接下来|下一步|我先|我准备|已经|完成|修复|更新|处理|搞定|确认|验证|排查|结论是|决定|根因是|主因是|当前状态是|目前状态是|现在状态是|i will|i'll|let me|going to|done|fixed|updated|completed|verified|confirmed|checked|decision|root cause|current state|the conclusion)/i;
+const PREFERENCE_RE = /(我喜欢被叫|叫我|称呼我|call me|nickname|偏好)/i;
+const TIME_RE = /(今天|明天|后天|今晚|明早|明晚|周[一二三四五六日天]|星期[一二三四五六日天]|上午|下午|\d+点|\d+:\d+)/;
+const TASK_RE = /(deadline|会议|开会|有会|meeting|todo|待办|任务)/i;
 
 let messageCount = 0;
 let toolEventCount = 0;
@@ -52,36 +77,19 @@ function scoreMessage(content) {
 
   const lowerContent = content.toLowerCase();
   let score = 0;
-  const keywords = {
-    remember: 0.8,
-    important: 0.9,
-    task: 0.7,
-    deadline: 0.9,
-    meeting: 0.6,
-    note: 0.7,
-    记住: 0.8,
-    重要: 0.9,
-    任务: 0.7,
-    截止: 0.9,
-    会议: 0.6,
-    开会: 0.7,
-    有会: 0.7,
-    喜欢: 0.6,
-  };
 
   const length = content.length;
   if (length > 30 && length < 500) score += 0.2;
   else if (length >= 500) score += 0.2;
 
-  for (const [keyword, weight] of Object.entries(keywords)) {
+  for (const [keyword, weight] of Object.entries(KEYWORDS)) {
     if (lowerContent.includes(keyword)) score += weight * 0.1;
   }
 
   if (/^(记住|remember)[:：]/i.test(content.trim())) score += 0.55;
-  if (/(我喜欢|喜欢被叫|call me|nickname|偏好)/i.test(content)) score += 0.25;
-  if (/(明天|后天|今天|周[一二三四五六日天]|星期[一二三四五六日天]|上午|下午|\d+点|\d+:\d+)/.test(content)) score += 0.2;
-  if (/(deadline|会议|开会|有会|meeting|todo|待办|任务)/i.test(content)) score += 0.2;
-
+  if (PREFERENCE_RE.test(content)) score += 0.25;
+  if (TIME_RE.test(content)) score += 0.2;
+  if (TASK_RE.test(content)) score += 0.2;
   if (content.includes('?') || content.includes('？')) score += 0.2;
   if (content.includes('!') || content.includes('！')) score += 0.1;
 
@@ -89,19 +97,100 @@ function scoreMessage(content) {
 }
 
 function readHookConfig(cfg, name) {
-  return cfg?.[`hooks?.${name}`] || cfg?.hooks?.[name] || {};
+  return (
+    cfg?.[`hooks?.${name}`]
+    || cfg?.hooks?.[name]
+    || cfg?.hooks?.internal?.entries?.[name]?.config
+    || cfg?.hooks?.internal?.entries?.[name]
+    || cfg?.hooks?.entries?.[name]?.config
+    || cfg?.hooks?.entries?.[name]
+    || cfg?.[`hooks.internal.entries.${name}.config`]
+    || cfg?.[`hooks.entries.${name}.config`]
+    || {}
+  );
+}
+
+function readDirectHookConfig(cfg) {
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return {};
+
+  const keys = Object.keys(DEFAULT_CONFIG);
+  const direct = {};
+
+  for (const key of keys) {
+    if (cfg[key] !== undefined) direct[key] = cfg[key];
+  }
+
+  return direct;
+}
+
+function findOpenClawConfigPath() {
+  let current = __dirname;
+  for (let i = 0; i < 8; i += 1) {
+    const candidate = path.join(current, 'openclaw.json');
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
+
+let cachedDiskConfig = null;
+
+function readHookConfigFromDisk(name) {
+  if (cachedDiskConfig) {
+    return readHookConfig(cachedDiskConfig, name);
+  }
+
+  const configPath = findOpenClawConfigPath();
+  if (!configPath) return {};
+
+  try {
+    cachedDiskConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    return readHookConfig(cachedDiskConfig, name);
+  } catch (error) {
+    log.warn(`Failed to read OpenClaw config from disk: ${error.message}`);
+    return {};
+  }
 }
 
 function resolveConfig(cfg) {
+  const direct = readDirectHookConfig(cfg);
   const unified = readHookConfig(cfg, 'brain-ingest');
   const legacyMessage = readHookConfig(cfg, 'brain-message');
   const legacyTool = readHookConfig(cfg, 'brain-tool-call');
+  const disk = readHookConfigFromDisk('brain-ingest');
   return {
     ...DEFAULT_CONFIG,
+    ...disk,
     ...legacyMessage,
     ...legacyTool,
     ...unified,
+    ...direct,
   };
+}
+
+function resolveRuntimeConfig(event = {}) {
+  const candidates = [
+    event?.hookConfig,
+    event?.context?.hookConfig,
+    event?.context?.hook?.config,
+    event?.context?.config,
+    event?.config,
+    event?.context?.cfg,
+    event?.cfg,
+    {},
+  ];
+
+  for (const candidate of candidates) {
+    const resolved = resolveConfig(candidate);
+    if (resolved.backend !== DEFAULT_CONFIG.backend) return resolved;
+    if (resolved.enabled !== DEFAULT_CONFIG.enabled) return resolved;
+    if (Object.keys(readDirectHookConfig(candidate)).length > 0) return resolved;
+    if (readHookConfig(candidate, 'brain-ingest') && Object.keys(readHookConfig(candidate, 'brain-ingest')).length > 0) return resolved;
+  }
+
+  return resolveConfig(candidates[0]);
 }
 
 function pickFirstString(...values) {
@@ -159,14 +248,7 @@ function normalizeMessageEvent(event = {}) {
     'unknown',
   );
 
-  return {
-    content,
-    author,
-    role,
-    channel,
-    messageId,
-    action,
-  };
+  return { content, author, role, channel, messageId, action };
 }
 
 async function handleMessageEvent(event, hookConfig) {
@@ -199,7 +281,7 @@ async function handleMessageEvent(event, hookConfig) {
   }
 
   const persistAllMessages = hookConfig.persist_all_messages ?? DEFAULT_CONFIG.persist_all_messages;
-  const looksLikeAssistantMemory = role === 'assistant' && /(我会|我将|稍后|接下来|下一步|我先|我准备|已|已经|完成|修复|更新|处理|搞定|确认|验证|排查|结论是|决定|现在判断|根因是|主因是|现在状态是|目前状态是|当前状态是|i will|i'll|let me|going to|done|fixed|updated|completed|verified|confirmed|checked|decision|root cause|current state|the conclusion)/i.test(content);
+  const looksLikeAssistantMemory = role === 'assistant' && ASSISTANT_MEMORY_RE.test(content);
   const forcePersist = Boolean(
     (persistAllMessages && action === 'received' && content)
     || (looksLikeAssistantMemory && action === 'sent' && content)
@@ -226,6 +308,7 @@ async function handleMessageEvent(event, hookConfig) {
   const cliResult = await callBrainCli({
     action: 'remember-message',
     store_root: resolveStoreRoot(event),
+    backend: hookConfig.backend ?? DEFAULT_CONFIG.backend,
     attention_threshold: threshold,
     working_memory_capacity: memoryLimit,
     message: {
@@ -245,11 +328,9 @@ async function handleMessageEvent(event, hookConfig) {
 
   result.remembered = Boolean(cliResult.remembered);
   result.location = result.remembered ? 'brain' : null;
-  if (cliResult.consolidation) {
-    result.consolidation = cliResult.consolidation;
-  }
+  if (cliResult.consolidation) result.consolidation = cliResult.consolidation;
 
-  log.info(`Message persisted to brain store (importance: ${importance.toFixed(2)}, action: ${action || 'unknown'}): ${messageId}`);
+  log.info(`Message persisted to brain store (backend: ${hookConfig.backend ?? DEFAULT_CONFIG.backend}, importance: ${importance.toFixed(2)}, action: ${action || 'unknown'}): ${messageId}`);
   writeDebug(event, { stage: 'message:remembered', result });
   return result;
 }
@@ -266,6 +347,7 @@ async function handleToolEvent(event, hookConfig) {
   const cliResult = await callBrainCli({
     action: 'remember-tool',
     store_root: resolveStoreRoot(event),
+    backend: hookConfig.backend ?? DEFAULT_CONFIG.backend,
     extract_knowledge: hookConfig.extract_knowledge ?? DEFAULT_CONFIG.extract_knowledge,
     auto_consolidate: hookConfig.auto_consolidate ?? DEFAULT_CONFIG.auto_consolidate,
     auto_consolidate_batch_size: Math.max(1, Math.floor((hookConfig.max_history ?? DEFAULT_CONFIG.max_history) / 10)),
@@ -283,6 +365,8 @@ async function handleToolEvent(event, hookConfig) {
     log.info(`Extracted ${cliResult.knowledge_count} knowledge items from ${toolName}`);
   }
 
+  log.info(`Tool persisted to brain store (backend: ${hookConfig.backend ?? DEFAULT_CONFIG.backend}): ${toolName}`);
+
   return {
     event_kind: 'tool',
     tool_name: toolName,
@@ -294,10 +378,8 @@ async function handleToolEvent(event, hookConfig) {
 }
 
 async function handleBrainIngest(event) {
-  const hookConfig = resolveConfig(event.context?.cfg || event.cfg || {});
-  if (!hookConfig.enabled) {
-    return;
-  }
+  const hookConfig = resolveRuntimeConfig(event);
+  if (!hookConfig.enabled) return;
 
   try {
     if (event?.type === 'message' || event?.type?.includes?.('message')) {

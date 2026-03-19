@@ -68,10 +68,14 @@ This refactor fixes that by introducing:
 - Consolidation and memory promotion
 - Multi-factor retrieval and reranking
 - Prompt-ready context building with duplicate suppression
+- Semantic promotion that prefers repeated episodic evidence over one-shot extraction
+- Recall budgets through `maxChars` and `maxEstimatedTokens`
 
 ### Persistence
 - `jsonl` backend for transparency and debugging
 - `lancedb` backend for scalable retrieval workflows
+- LanceDB-backed coarse recall prefiltering for larger stores
+- Optional local embeddings for `episodic` and `semantic` recall
 - Save/load support through `OpenClawBrain.save()` and `OpenClawBrain.load()`
 
 ### OpenClaw integration
@@ -185,6 +189,8 @@ Injects compact memory recall into system-prompt space during `before_prompt_bui
 
 - Path: `plugins/brain-prompt`
 - Doc: [`plugins/brain-prompt/README.md`](./plugins/brain-prompt/README.md)
+- Supports `backend`, `limit`, `recentWindow`, `maxChars`, and `maxEstimatedTokens`
+- Emits injection logs with candidate count, selected count, and estimated token usage
 
 ### Intended runtime flow
 
@@ -212,7 +218,8 @@ Use JSONL when you want:
 Use LanceDB when you want:
 
 - larger persistent stores
-- future vector retrieval workflows
+- metadata-aware recall prefiltering
+- local embedding-assisted similarity search
 - cleaner evolution toward semantic search
 
 ### Example
@@ -226,6 +233,9 @@ brain.remember("The user likes concise answers", context={"kind": "preference"},
 brain.save("./data/brain-jsonl", backend="jsonl")
 brain.save("./data/brain-lancedb", backend="lancedb")
 ```
+
+### Operational note
+LanceDB tables are created per bucket only when that bucket currently has rows. A missing `working_records.lance` table usually means working memory expired or is empty, not that persistence is broken.
 
 ---
 
@@ -289,7 +299,6 @@ pip install -e .
 
 Near-term priorities:
 
-- deeper LanceDB/vector retrieval integration
 - stronger semantic extraction pipelines
 - more production-grade repository abstractions
 - richer OpenClaw configuration examples

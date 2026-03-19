@@ -140,10 +140,12 @@ plugins/brain-prompt
         },
         config: {
           enabled: true,
-          backend: "jsonl",
+          backend: "lancedb",
           limit: 5,
           recentWindow: 8,
           minQueryLength: 2,
+          maxChars: 900,
+          maxEstimatedTokens: 240,
           heading: "[Brain Recall]"
         }
       }
@@ -166,8 +168,14 @@ Choose JSONL when you want:
 ### LanceDB backend
 Choose LanceDB when you want:
 - a more scalable data store
-- future vector retrieval support
+- metadata-aware prefilter recall
+- local embedding-assisted similarity search
 - cleaner migration toward semantic search workflows
+
+Operational note:
+- tables are created at `<workspace>/data/openclaw-brain/`
+- bucket names map to `*_records.lance` tables
+- `working_records.lance` may be absent when working memory is empty or its TTL has expired
 
 ---
 
@@ -248,6 +256,7 @@ Check:
 - messages/tools are being ingested first
 - recent duplicate suppression is not filtering everything useful
 - query length is above `minQueryLength`
+- review plugin logs for `candidate_count`, `selected`, `chars`, and `tokens`
 
 ---
 

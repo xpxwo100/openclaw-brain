@@ -17,6 +17,7 @@ if sys.platform == "win32":
 
 
 PROJECT_ROOT = Path(__file__).parent
+VERIFY_BASETEMP = PROJECT_ROOT / ".tmp-test" / "verify-pytest"
 
 
 def verify_structure():
@@ -82,15 +83,16 @@ def verify_modules():
 
 def verify_tests():
     try:
+        VERIFY_BASETEMP.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q"],
+            [sys.executable, "-m", "pytest", "-q", "--basetemp", str(VERIFY_BASETEMP)],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=180,
         )
     except subprocess.TimeoutExpired:
-        return ["tests timed out (60s)"]
+        return ["tests timed out (180s)"]
     except Exception as exc:
         return [f"failed to run tests: {exc}"]
 

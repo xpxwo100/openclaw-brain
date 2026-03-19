@@ -71,6 +71,8 @@ class BrainContextBuilder:
         recent_messages: Optional[List[str]] = None,
         recent_message_ids: Optional[List[str]] = None,
         max_items: int = 5,
+        max_chars: Optional[int] = None,
+        max_estimated_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
         recent_messages = recent_messages or []
         recent_message_ids = set(recent_message_ids or [])
@@ -127,6 +129,9 @@ class BrainContextBuilder:
             ):
                 continue
 
+            if self._would_exceed_budget(items, item, max_chars=max_chars, max_estimated_tokens=max_estimated_tokens):
+                continue
+
             items.append(item)
             seen.add(normalized)
             seen.add(item_normalized)
@@ -145,6 +150,8 @@ class BrainContextBuilder:
             "count": len(items),
             "items": [item.to_dict() for item in items],
             "context_text": context_text,
+            "context_chars": len(context_text),
+            "estimated_tokens": self._estimate_tokens(context_text),
         }
 
     def _priority_key(self, candidate: RetrievedMemory, progress_query: bool = False) -> tuple[float, float, float, float, float, float, float]:
@@ -260,6 +267,23 @@ class BrainContextBuilder:
         lines.extend(f"- {item.text}" for item in items)
         return "\n".join(lines)
 
+    def _would_exceed_budget(
+        self,
+        items: List[ContextItem],
+        item: ContextItem,
+        *,
+        max_chars: Optional[int],
+        max_estimated_tokens: Optional[int],
+    ) -> bool:
+        if max_chars is None and max_estimated_tokens is None:
+            return False
+        trial_text = self._render_block([*items, item])
+        if max_chars is not None and len(trial_text) > max_chars:
+            return True
+        if max_estimated_tokens is not None and self._estimate_tokens(trial_text) > max_estimated_tokens:
+            return True
+        return False
+
     def _item_signature(self, item: Optional[ContextItem]) -> str:
         if not item:
             return ""
@@ -309,3 +333,9 @@ class BrainContextBuilder:
         if not left_tokens or not right_tokens:
             return 0.0
         return len(left_tokens & right_tokens) / max(1, min(len(left_tokens), len(right_tokens)))
+
+    def _estimate_tokens(self, text: str) -> int:
+        if not text:
+            return 0
+        # Conservative heuristic that behaves reasonably for mixed Chinese/English text.
+        return max(1, len(text) // 4 + len(_WORD_RE.findall(text)) // 3)

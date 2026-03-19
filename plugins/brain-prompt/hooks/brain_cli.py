@@ -7,6 +7,7 @@ The JS hooks stay thin; Python owns memory semantics and on-disk state.
 from __future__ import annotations
 
 import json
+import inspect
 import os
 import re
 import sys
@@ -489,15 +490,22 @@ def remember_message(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 def build_context(payload: Dict[str, Any]) -> Dict[str, Any]:
     brain = load_brain(payload)
-    result = brain.build_context(
-        query=payload.get("query", ""),
-        recent_messages=payload.get("recent_messages") or [],
-        recent_message_ids=payload.get("recent_message_ids") or [],
-        limit=int(payload.get("limit", 5)),
-        context=payload.get("context") or {},
-        emotion=payload.get("emotion"),
-    )
+    build_context_kwargs = {
+        "query": payload.get("query", ""),
+        "recent_messages": payload.get("recent_messages") or [],
+        "recent_message_ids": payload.get("recent_message_ids") or [],
+        "limit": int(payload.get("limit", 5)),
+        "context": payload.get("context") or {},
+        "emotion": payload.get("emotion"),
+        "max_chars": payload.get("max_chars"),
+        "max_estimated_tokens": payload.get("max_estimated_tokens"),
+    }
+    supported = set(inspect.signature(brain.build_context).parameters.keys())
+    result = brain.build_context(**{key: value for key, value in build_context_kwargs.items() if key in supported})
+    result["recall_mode"] = result.get("recall_mode", "full_snapshot")
+    result["candidate_count"] = int(result.get("candidate_count") or 0)
     result["resolved_store_root"] = str(resolve_store(payload))
+    result["debug"] = _build_context_debug(payload, result)
     return result
 
 
@@ -510,6 +518,40 @@ def _tool_preview(value: Any, limit: int = 240) -> str:
         return json.dumps(value, ensure_ascii=False)[:limit]
     except TypeError:
         return _clean_text(value)[:limit]
+
+
+def _preview_text(value: Any, limit: int = 72) -> str:
+    text = _clean_text(value)
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 3)]}..."
+
+
+def _summarize_context_items(items: List[Dict[str, Any]], limit: int = 3) -> List[str]:
+    previews: List[str] = []
+    for item in items[:limit]:
+        kind = str(item.get("kind") or "").strip()
+        text = _preview_text(item.get("text") or "")
+        if not text:
+            continue
+        previews.append(f"{kind}:{text}" if kind else text)
+    return previews
+
+
+def _build_context_debug(payload: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+    items = result.get("items") or []
+    return {
+        "query": _preview_text(payload.get("query") or "", 120),
+        "backend": payload.get("backend", "jsonl"),
+        "recall_mode": result.get("recall_mode", "unknown"),
+        "candidate_count": int(result.get("candidate_count") or 0),
+        "selected_count": int(result.get("count") or 0),
+        "context_chars": int(result.get("context_chars") or 0),
+        "estimated_tokens": int(result.get("estimated_tokens") or 0),
+        "recent_message_count": len(payload.get("recent_messages") or []),
+        "recent_message_id_count": len(payload.get("recent_message_ids") or []),
+        "item_previews": _summarize_context_items(items, 3),
+    }
 
 
 def extract_knowledge(tool_name: str, result: Any) -> List[Dict[str, Any]]:

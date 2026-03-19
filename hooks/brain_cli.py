@@ -26,6 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from brain import OpenClawBrain  # noqa: E402
+from storage import create_store  # noqa: E402
 
 
 PREFERENCE_PATTERNS = [
@@ -100,6 +101,7 @@ NOISE_PREFIX_RE = re.compile(r"^(?:请)?记住[:：]?\s*", re.IGNORECASE)
 LEADING_FILLER_RE = re.compile(r"^(?:另外|还有|然后|以及|并且|顺便说下|顺便)\s*", re.IGNORECASE)
 CLAUSE_SPLIT_RE = re.compile(r"[\n。！？!?；;]+|(?<!\d),(?!\d)|，")
 STATE_SUMMARY_KEY = "assistant_state_summary"
+SEMANTIC_PROMOTION_THRESHOLD = 2
 
 
 def load_payload() -> Dict[str, Any]:
@@ -155,6 +157,30 @@ def save_brain(brain: OpenClawBrain, payload: Dict[str, Any]) -> Dict[str, str]:
     backend = payload.get("backend", "jsonl")
     written = brain.save(resolve_store(payload), backend=backend)
     return {name: str(path) for name, path in written.items()}
+
+
+def _coarse_recall_records(payload: Dict[str, Any]) -> List[Any]:
+    backend = payload.get("backend", "jsonl")
+    if backend != "lancedb":
+        return []
+
+    store = create_store(backend, resolve_store(payload))
+    query = str(payload.get("query") or "")
+    limit = int(payload.get("limit", 5))
+    context = payload.get("context") or {}
+
+    buckets = [
+        ("semantic", {"limit": max(limit * 6, 18), "kinds": ["semantic", "summary", "rule", "preference", "fact", "task"], "min_importance": 0.35, "recent_hours": 24 * 365}),
+        ("working", {"limit": max(limit * 2, 6), "min_importance": 0.2, "recent_hours": 24 * 14}),
+        ("episodic", {"limit": max(limit * 5, 15), "min_importance": 0.45, "recent_hours": 24 * 30}),
+        ("hippocampus", {"limit": max(limit * 3, 12), "min_importance": 0.55, "recent_hours": 24 * 7}),
+    ]
+
+    deduped: Dict[str, Any] = {}
+    for bucket, options in buckets:
+        for record in store.query_records(bucket, query=query, context=context, **options):
+            deduped.setdefault(getattr(record, "id", f"{bucket}:{getattr(record, 'content', '')}"), record)
+    return list(deduped.values())
 
 
 def _latest_created_at(records: List[Any]) -> Optional[datetime]:
@@ -249,27 +275,85 @@ def _append_memory(memories: List[Dict[str, Any]], seen: set[tuple[str, str]], t
     )
 
 
+def _append_semantic_candidate(memories: List[Dict[str, Any]], seen: set[tuple[str, str]], text: str, context: Dict[str, Any], importance: float) -> None:
+    _append_memory(
+        memories,
+        seen,
+        text,
+        {**context, "memory_stage": "candidate"},
+        importance,
+        "semantic_candidate",
+    )
+
+
 def _extract_user_clause_memories(clause: str, base_context: Dict[str, Any], memories: List[Dict[str, Any]], seen: set[tuple[str, str]]) -> None:
     preference = _extract_first(PREFERENCE_PATTERNS, clause)
     if preference:
         if not preference.startswith("被叫") and ("叫" in clause or "call me" in clause.lower() or "nickname" in clause.lower()):
             preference = f"被叫{preference.lstrip('做成叫作是为') }".strip()
-        _append_memory(memories, seen, preference, {**base_context, "kind": "preference", "category": "preference"}, 0.92, "semantic")
+        preference_context = {**base_context, "kind": "preference", "category": "preference"}
+        _append_memory(memories, seen, preference, preference_context, 0.78, "episodic")
+        _append_semantic_candidate(memories, seen, preference, preference_context, 0.92)
 
     if TIME_MEETING_RE.search(clause):
-        _append_memory(memories, seen, clause, {**base_context, "kind": "task", "category": "schedule"}, 0.9, "semantic")
+        _append_memory(memories, seen, clause, {**base_context, "kind": "task", "category": "schedule"}, 0.9, "episodic")
 
     if any(token in clause for token in ["准备", "提交", "整理", "完成", "处理"]) and not TIME_MEETING_RE.search(clause):
         task = _extract_first(TASK_PATTERNS, clause) or clause
-        _append_memory(memories, seen, task, {**base_context, "kind": "task", "category": "task"}, 0.84, "semantic")
+        _append_memory(memories, seen, task, {**base_context, "kind": "task", "category": "task"}, 0.84, "episodic")
 
     rule = _extract_first(RULE_PATTERNS, clause)
     if rule and len(rule) >= 2:
-        _append_memory(memories, seen, rule, {**base_context, "kind": "rule", "category": "rule"}, 0.9, "semantic")
+        rule_context = {**base_context, "kind": "rule", "category": "rule"}
+        _append_memory(memories, seen, rule, rule_context, 0.74, "episodic")
+        _append_semantic_candidate(memories, seen, rule, rule_context, 0.9)
 
     fact = _extract_first(FACT_PATTERNS, clause)
     if fact and len(fact) >= 2:
-        _append_memory(memories, seen, fact, {**base_context, "kind": "fact", "category": "fact"}, 0.78, "semantic")
+        fact_context = {**base_context, "kind": "fact", "category": "fact"}
+        _append_memory(memories, seen, fact, fact_context, 0.72, "episodic")
+        _append_semantic_candidate(memories, seen, fact, fact_context, 0.78)
+
+
+def _count_supporting_episodic_memories(brain: OpenClawBrain, text: str, context: Dict[str, Any]) -> int:
+    normalized = _normalize_memory_text(text).lower()
+    expected_kind = str(context.get("kind") or "").strip().lower()
+    expected_subtype = str(context.get("source_subtype") or "").strip().lower()
+
+    count = 0
+    for bucket in (brain.hippocampus.encoding_buffer, brain.episodic.memories):
+        for memory in bucket:
+            memory_context = getattr(memory, "context", {}) or {}
+            memory_kind = str(memory_context.get("kind") or "").strip().lower()
+            memory_subtype = str(memory_context.get("source_subtype") or "").strip().lower()
+            candidate_text = _normalize_memory_text(memory_context.get("definition") or getattr(memory, "content", "")).lower()
+            if candidate_text != normalized:
+                continue
+            if expected_kind and memory_kind != expected_kind:
+                continue
+            if expected_subtype and memory_subtype != expected_subtype:
+                continue
+            count += 1
+    return count
+
+
+def _should_promote_semantic(brain: OpenClawBrain, text: str, context: Dict[str, Any]) -> bool:
+    expected_category = str(context.get("category") or context.get("kind") or "").strip().lower()
+    existing = brain.semantic.find_by_name(text)
+    if existing and str(existing.category or "").strip().lower() == expected_category:
+        return True
+    return _count_supporting_episodic_memories(brain, text, context) >= SEMANTIC_PROMOTION_THRESHOLD
+
+
+def _remember_extracted_item(brain: OpenClawBrain, item: Dict[str, Any]) -> Optional[Any]:
+    mode = item["mode"]
+    if mode == "semantic_candidate":
+        if not _should_promote_semantic(brain, item["text"], item["context"]):
+            return None
+        semantic_context = dict(item["context"])
+        semantic_context.pop("memory_stage", None)
+        return brain.remember(item["text"], context=semantic_context, importance=item["importance"], mode="semantic")
+    return brain.remember(item["text"], context=item["context"], importance=item["importance"], mode=mode)
 
 
 def _build_state_summary_fields(brain: OpenClawBrain, extracted: List[Dict[str, Any]]) -> Dict[str, str]:
@@ -383,24 +467,9 @@ def extract_message_memories(message: Dict[str, Any]) -> List[Dict[str, Any]]:
                 0.82,
                 "episodic",
             )
-            _append_memory(
-                memories,
-                seen,
-                result,
-                {**base_context, "kind": "fact", "source_subtype": "assistant_result"},
-                0.76,
-                "semantic",
-            )
+            _append_semantic_candidate(memories, seen, result, {**base_context, "kind": "fact", "source_subtype": "assistant_result"}, 0.76)
 
         if decision:
-            _append_memory(
-                memories,
-                seen,
-                decision,
-                {**base_context, "kind": "rule", "category": "decision", "source_subtype": "assistant_decision"},
-                0.86,
-                "semantic",
-            )
             _append_memory(
                 memories,
                 seen,
@@ -409,6 +478,7 @@ def extract_message_memories(message: Dict[str, Any]) -> List[Dict[str, Any]]:
                 0.72,
                 "episodic",
             )
+            _append_semantic_candidate(memories, seen, decision, {**base_context, "kind": "rule", "category": "decision", "source_subtype": "assistant_decision"}, 0.86)
 
         if state:
             _append_memory(
@@ -417,7 +487,7 @@ def extract_message_memories(message: Dict[str, Any]) -> List[Dict[str, Any]]:
                 state,
                 {**base_context, "kind": "fact", "category": "state", "source_subtype": "assistant_state"},
                 0.8,
-                "semantic",
+                "episodic",
             )
         return memories
 
@@ -464,7 +534,7 @@ def remember_message(payload: Dict[str, Any]) -> Dict[str, Any]:
             remembered.append(raw_memory)
 
     for item in extracted:
-        memory = brain.remember(item["text"], context=item["context"], importance=item["importance"], mode=item["mode"])
+        memory = _remember_extracted_item(brain, item)
         if memory is not None:
             remembered.append(memory)
 
@@ -488,16 +558,77 @@ def remember_message(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def build_context(payload: Dict[str, Any]) -> Dict[str, Any]:
-    brain = load_brain(payload)
-    result = brain.build_context(
-        query=payload.get("query", ""),
-        recent_messages=payload.get("recent_messages") or [],
-        recent_message_ids=payload.get("recent_message_ids") or [],
-        limit=int(payload.get("limit", 5)),
-        context=payload.get("context") or {},
-        emotion=payload.get("emotion"),
-    )
+    query = payload.get("query", "")
+    recent_messages = payload.get("recent_messages") or []
+    recent_message_ids = payload.get("recent_message_ids") or []
+    limit = int(payload.get("limit", 5))
+    context = payload.get("context") or {}
+    emotion = payload.get("emotion")
+
+    coarse_records = _coarse_recall_records(payload)
+    if coarse_records:
+        brain = OpenClawBrain(
+            attention_threshold=payload.get("attention_threshold", 0.5),
+            working_memory_capacity=payload.get("working_memory_capacity", 20),
+            hippocampus_capacity=payload.get("hippocampus_capacity", 1000),
+            consolidation_interval_hours=payload.get("consolidation_interval_hours", 4.0),
+        )
+        recalled = brain.retriever.retrieve(
+            query=query,
+            memories=coarse_records,
+            context=context,
+            emotion=emotion,
+            limit=max(limit * 4, 10),
+        )
+        if brain._is_progress_query(query):
+            summary = next(
+                (
+                    item for item in recalled
+                    if str((getattr(item.memory, "context", {}) or {}).get("source_subtype") or "").strip().lower() == "assistant_state_summary"
+                ),
+                None,
+            )
+            if summary is None:
+                for record in coarse_records:
+                    source_subtype = str((getattr(record, "context", {}) or {}).get("source_subtype") or "").strip().lower()
+                    if source_subtype != "assistant_state_summary":
+                        continue
+                    summary_results = brain.retriever.retrieve(
+                        query=query,
+                        memories=[record],
+                        context=context,
+                        emotion=emotion,
+                        limit=1,
+                    )
+                    if summary_results:
+                        recalled = [summary_results[0], *recalled]
+                    break
+        result = brain.context_builder.build(
+            query=query,
+            recalled=recalled,
+            recent_messages=recent_messages,
+            recent_message_ids=recent_message_ids,
+            max_items=limit,
+            max_chars=payload.get("max_chars"),
+            max_estimated_tokens=payload.get("max_estimated_tokens"),
+        )
+        result["recall_mode"] = "store_prefilter"
+        result["candidate_count"] = len(coarse_records)
+    else:
+        brain = load_brain(payload)
+        result = brain.build_context(
+            query=query,
+            recent_messages=recent_messages,
+            recent_message_ids=recent_message_ids,
+            limit=limit,
+            context=context,
+            emotion=emotion,
+            max_chars=payload.get("max_chars"),
+            max_estimated_tokens=payload.get("max_estimated_tokens"),
+        )
+        result["recall_mode"] = "full_snapshot"
     result["resolved_store_root"] = str(resolve_store(payload))
+    result["debug"] = _build_context_debug(payload, result)
     return result
 
 
@@ -510,6 +641,40 @@ def _tool_preview(value: Any, limit: int = 240) -> str:
         return json.dumps(value, ensure_ascii=False)[:limit]
     except TypeError:
         return _clean_text(value)[:limit]
+
+
+def _preview_text(value: Any, limit: int = 72) -> str:
+    text = _clean_text(value)
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 3)]}..."
+
+
+def _summarize_context_items(items: List[Dict[str, Any]], limit: int = 3) -> List[str]:
+    previews: List[str] = []
+    for item in items[:limit]:
+        kind = str(item.get("kind") or "").strip()
+        text = _preview_text(item.get("text") or "")
+        if not text:
+            continue
+        previews.append(f"{kind}:{text}" if kind else text)
+    return previews
+
+
+def _build_context_debug(payload: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+    items = result.get("items") or []
+    return {
+        "query": _preview_text(payload.get("query") or "", 120),
+        "backend": payload.get("backend", "jsonl"),
+        "recall_mode": result.get("recall_mode", "unknown"),
+        "candidate_count": int(result.get("candidate_count") or 0),
+        "selected_count": int(result.get("count") or 0),
+        "context_chars": int(result.get("context_chars") or 0),
+        "estimated_tokens": int(result.get("estimated_tokens") or 0),
+        "recent_message_count": len(payload.get("recent_messages") or []),
+        "recent_message_id_count": len(payload.get("recent_message_ids") or []),
+        "item_previews": _summarize_context_items(items, 3),
+    }
 
 
 def extract_knowledge(tool_name: str, result: Any) -> List[Dict[str, Any]]:
