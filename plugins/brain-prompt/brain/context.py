@@ -71,6 +71,8 @@ class BrainContextBuilder:
         recent_messages: Optional[List[str]] = None,
         recent_message_ids: Optional[List[str]] = None,
         max_items: int = 5,
+        max_chars: Optional[int] = None,
+        max_estimated_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
         recent_messages = recent_messages or []
         recent_message_ids = set(recent_message_ids or [])
@@ -92,6 +94,8 @@ class BrainContextBuilder:
             if not normalized or normalized in seen:
                 continue
             if self._is_trivial_text(normalized):
+                continue
+            if self._is_irrelevant(candidate, progress_query=progress_query) and not is_state_summary:
                 continue
             if self._is_recent_chat_echo(memory, recent_message_ids) and not is_state_summary:
                 continue
@@ -127,6 +131,9 @@ class BrainContextBuilder:
             ):
                 continue
 
+            if self._would_exceed_budget(items, item, max_chars=max_chars, max_estimated_tokens=max_estimated_tokens):
+                continue
+
             items.append(item)
             seen.add(normalized)
             seen.add(item_normalized)
@@ -145,9 +152,11 @@ class BrainContextBuilder:
             "count": len(items),
             "items": [item.to_dict() for item in items],
             "context_text": context_text,
+            "context_chars": len(context_text),
+            "estimated_tokens": self._estimate_tokens(context_text),
         }
 
-    def _priority_key(self, candidate: RetrievedMemory, progress_query: bool = False) -> tuple[float, float, float, float, float, float, float]:
+    def _priority_key(self, candidate: RetrievedMemory, progress_query: bool = False) -> tuple[float, float, float, float, float, float, float, float]:
         memory = candidate.memory
         kind = getattr(memory, "kind", MemoryKind.EPISODIC)
         kind_value = kind.value if hasattr(kind, "value") else str(kind)
@@ -171,10 +180,26 @@ class BrainContextBuilder:
 
         importance = float(getattr(memory, "importance", 0.5))
         score = candidate.score.total()
+        relevance = float(getattr(candidate.score, "relevance", 0.0))
         recency = float(getattr(memory, "access_count", 0))
         freshness = self._freshness_score(memory)
         progress_boost = 1.0 if progress_query and source_subtype == "assistant_state_summary" else 0.0
-        return (progress_boost, assistant_priority, semantic_boost, score, importance, freshness, recency)
+        return (progress_boost, assistant_priority, relevance, score, semantic_boost, importance, freshness, recency)
+
+    def _is_irrelevant(self, candidate: RetrievedMemory, progress_query: bool = False) -> bool:
+        if progress_query:
+            return False
+
+        memory = candidate.memory
+        kind = getattr(memory, "kind", MemoryKind.EPISODIC)
+        kind_value = kind.value if hasattr(kind, "value") else str(kind)
+        relevance = float(getattr(candidate.score, "relevance", 0.0))
+        context_match = float(getattr(candidate.score, "context_match", 0.0))
+
+        if relevance >= 0.12 or context_match >= 0.5:
+            return False
+
+        return kind_value in {"working", "episodic", "semantic", "summary", "rule", "preference", "fact", "task"}
 
     def _is_recent_chat_echo(self, memory: Any, recent_message_ids: set[str]) -> bool:
         kind = getattr(memory, "kind", MemoryKind.EPISODIC)
@@ -260,6 +285,23 @@ class BrainContextBuilder:
         lines.extend(f"- {item.text}" for item in items)
         return "\n".join(lines)
 
+    def _would_exceed_budget(
+        self,
+        items: List[ContextItem],
+        item: ContextItem,
+        *,
+        max_chars: Optional[int],
+        max_estimated_tokens: Optional[int],
+    ) -> bool:
+        if max_chars is None and max_estimated_tokens is None:
+            return False
+        trial_text = self._render_block([*items, item])
+        if max_chars is not None and len(trial_text) > max_chars:
+            return True
+        if max_estimated_tokens is not None and self._estimate_tokens(trial_text) > max_estimated_tokens:
+            return True
+        return False
+
     def _item_signature(self, item: Optional[ContextItem]) -> str:
         if not item:
             return ""
@@ -309,3 +351,9 @@ class BrainContextBuilder:
         if not left_tokens or not right_tokens:
             return 0.0
         return len(left_tokens & right_tokens) / max(1, min(len(left_tokens), len(right_tokens)))
+
+    def _estimate_tokens(self, text: str) -> int:
+        if not text:
+            return 0
+        # Conservative heuristic that behaves reasonably for mixed Chinese/English text.
+        return max(1, len(text) // 4 + len(_WORD_RE.findall(text)) // 3)

@@ -61,22 +61,23 @@ def test_brain_cli_remember_message_keeps_first_preference_as_episodic_evidence(
 
 def test_brain_cli_build_context_filters_recent_duplicates(tmp_path):
     store_root = tmp_path / "hook-store"
-    run_cli(
-        {
-            "action": "remember-message",
-            "store_root": str(store_root),
-            "attention_threshold": 0.1,
-            "message": {
-                "content": "记住，用户喜欢被叫鸡哥",
-                "author": "tester",
-                "channel": "telegram",
-                "message_id": "m1",
-            },
-            "importance": 0.95,
-            "mode": "episodic",
-            "trigger_consolidation": True,
-        }
-    )
+    for message_id in ("m1", "m2"):
+        run_cli(
+            {
+                "action": "remember-message",
+                "store_root": str(store_root),
+                "attention_threshold": 0.1,
+                "message": {
+                    "content": "记住，用户喜欢被叫鸡哥",
+                    "author": "tester",
+                    "channel": "telegram",
+                    "message_id": message_id,
+                },
+                "importance": 0.95,
+                "mode": "episodic",
+                "trigger_consolidation": True,
+            }
+        )
     run_cli(
         {
             "action": "remember-tool",
@@ -95,9 +96,9 @@ def test_brain_cli_build_context_filters_recent_duplicates(tmp_path):
         {
             "action": "build-context",
             "store_root": str(store_root),
-            "query": "我喜欢什么称呼",
+            "query": "preferred nickname",
             "recent_messages": ["记住，用户喜欢被叫鸡哥"],
-            "recent_message_ids": ["m1"],
+            "recent_message_ids": ["m1", "m2"],
             "limit": 5,
         }
     )

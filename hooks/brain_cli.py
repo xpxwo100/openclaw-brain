@@ -102,6 +102,203 @@ LEADING_FILLER_RE = re.compile(r"^(?:另外|还有|然后|以及|并且|顺便�
 CLAUSE_SPLIT_RE = re.compile(r"[\n。！？!?；;]+|(?<!\d),(?!\d)|，")
 STATE_SUMMARY_KEY = "assistant_state_summary"
 SEMANTIC_PROMOTION_THRESHOLD = 2
+WORKING_QUERY_RE = re.compile(
+    r"进度|状态|当前|现在|做到哪|卡在哪|下一步|what'?s the status|current status|latest status|where are we|next step|progress",
+    re.IGNORECASE,
+)
+RESUME_QUERY_RE = re.compile(
+    r"简历|履历|项目经历|项目经验|工作经历|项目介绍|ai\s*agent|agent\s*项目|agent project|resume|cv|interview|面试|求职",
+    re.IGNORECASE,
+)
+LEARNING_QUERY_RE = re.compile(
+    r"学习|资料|链接|文章|论文|教程|笔记|总结|看看这个|读一下|review this|learn|study|article|paper|note",
+    re.IGNORECASE,
+)
+DEBUG_QUERY_RE = re.compile(
+    r"报错|错误|失败|问题|为什么|排查|修复|日志|异常|debug|bug|traceback|exception|fix|issue|error|failed",
+    re.IGNORECASE,
+)
+PREFERENCE_QUERY_RE = re.compile(
+    r"叫我|怎么称呼|称呼我|偏好|喜好|记住|不要|必须|规则|nickname|call me|prefer|preference|must|should",
+    re.IGNORECASE,
+)
+
+DEFAULT_QUERY_PROFILE = {
+    "name": "default",
+    "include_working": False,
+    "semantic_kinds": ["semantic", "summary", "rule", "preference", "fact", "task"],
+    "episodic_kinds": None,
+    "hippocampus_kinds": None,
+    "working_kinds": ["task", "fact", "summary"],
+    "semantic_min_importance": 0.35,
+    "episodic_min_importance": 0.45,
+    "hippocampus_min_importance": 0.55,
+    "working_min_importance": 0.2,
+    "semantic_recent_hours": 24 * 365,
+    "episodic_recent_hours": 24 * 30,
+    "hippocampus_recent_hours": 24 * 7,
+    "working_recent_hours": 24 * 14,
+    "min_relevance": 0.1,
+}
+
+
+def _query_profile(query: str) -> Dict[str, Any]:
+    normalized = _clean_text(query).lower()
+    if not normalized:
+        return dict(DEFAULT_QUERY_PROFILE)
+
+    if WORKING_QUERY_RE.search(normalized):
+        return {
+            **DEFAULT_QUERY_PROFILE,
+            "name": "progress",
+            "include_working": True,
+            "semantic_kinds": ["summary", "task", "fact", "semantic"],
+            "episodic_kinds": ["task", "fact", "message"],
+            "hippocampus_kinds": ["task", "fact", "message"],
+            "working_kinds": ["task", "fact", "summary"],
+            "hippocampus_recent_hours": 24 * 14,
+            "min_relevance": 0.04,
+        }
+
+    if RESUME_QUERY_RE.search(normalized):
+        return {
+            **DEFAULT_QUERY_PROFILE,
+            "name": "resume",
+            "semantic_kinds": ["semantic", "summary", "fact", "task"],
+            "episodic_kinds": ["fact", "task"],
+            "hippocampus_kinds": ["fact", "task"],
+            "semantic_min_importance": 0.45,
+            "episodic_min_importance": 0.5,
+            "hippocampus_min_importance": 0.62,
+            "episodic_recent_hours": 24 * 120,
+            "hippocampus_recent_hours": 24 * 14,
+            "min_relevance": 0.18,
+        }
+
+    if PREFERENCE_QUERY_RE.search(normalized):
+        return {
+            **DEFAULT_QUERY_PROFILE,
+            "name": "preference",
+            "semantic_kinds": ["preference", "rule", "fact", "summary"],
+            "episodic_kinds": ["preference", "rule", "fact"],
+            "hippocampus_kinds": ["preference", "rule", "fact"],
+            "semantic_min_importance": 0.4,
+            "episodic_min_importance": 0.42,
+            "hippocampus_min_importance": 0.5,
+            "min_relevance": 0.16,
+        }
+
+    if DEBUG_QUERY_RE.search(normalized):
+        return {
+            **DEFAULT_QUERY_PROFILE,
+            "name": "debug",
+            "include_working": True,
+            "semantic_kinds": ["summary", "fact", "task", "rule", "semantic"],
+            "episodic_kinds": ["message", "fact", "task", "tool", "rule"],
+            "hippocampus_kinds": ["message", "fact", "task", "tool"],
+            "working_kinds": ["task", "fact", "summary"],
+            "episodic_recent_hours": 24 * 45,
+            "hippocampus_recent_hours": 24 * 14,
+            "min_relevance": 0.08,
+        }
+
+    if LEARNING_QUERY_RE.search(normalized):
+        return {
+            **DEFAULT_QUERY_PROFILE,
+            "name": "learning",
+            "semantic_kinds": ["semantic", "summary", "fact", "task"],
+            "episodic_kinds": ["fact", "task"],
+            "hippocampus_kinds": ["fact", "task"],
+            "semantic_min_importance": 0.38,
+            "episodic_min_importance": 0.45,
+            "hippocampus_min_importance": 0.58,
+            "semantic_recent_hours": 24 * 540,
+            "episodic_recent_hours": 24 * 90,
+            "hippocampus_recent_hours": 24 * 21,
+            "min_relevance": 0.14,
+        }
+
+    return dict(DEFAULT_QUERY_PROFILE)
+
+
+def _filter_recalled_by_profile(recalled: List[Any], profile: Dict[str, Any]) -> List[Any]:
+    allowed_semantic = {str(kind) for kind in profile.get("semantic_kinds") or []}
+    allowed_other = set()
+    for key in ("episodic_kinds", "hippocampus_kinds", "working_kinds"):
+        values = profile.get(key) or []
+        allowed_other.update(str(value) for value in values)
+
+    filtered: List[Any] = []
+    for item in recalled:
+        memory = item.memory
+        kind = getattr(memory, "kind", None)
+        kind_value = kind.value if hasattr(kind, "value") else str(kind)
+        context = getattr(memory, "context", {}) or {}
+        subtype = str(context.get("source_subtype") or "").strip().lower()
+        relevance = float(getattr(item.score, "relevance", 0.0))
+        context_match = float(getattr(item.score, "context_match", 0.0))
+
+        if relevance < float(profile.get("min_relevance", 0.1)) and context_match < 0.5:
+            continue
+
+        if subtype == "assistant_state_summary" and profile.get("name") not in {"progress", "debug"}:
+            continue
+
+        if kind_value in {"semantic", "summary", "rule", "preference", "fact", "task"}:
+            if allowed_semantic and kind_value not in allowed_semantic:
+                continue
+        elif allowed_other and kind_value not in allowed_other:
+            continue
+
+        filtered.append(item)
+
+    return filtered
+
+
+def _bucket_plan(limit: int, profile: Dict[str, Any]) -> List[Any]:
+    buckets = [
+        (
+            "semantic",
+            {
+                "limit": max(limit * 6, 18),
+                "kinds": profile.get("semantic_kinds"),
+                "min_importance": profile.get("semantic_min_importance", 0.35),
+                "recent_hours": profile.get("semantic_recent_hours", 24 * 365),
+            },
+        ),
+        (
+            "episodic",
+            {
+                "limit": max(limit * 5, 15),
+                "kinds": profile.get("episodic_kinds"),
+                "min_importance": profile.get("episodic_min_importance", 0.45),
+                "recent_hours": profile.get("episodic_recent_hours", 24 * 30),
+            },
+        ),
+        (
+            "hippocampus",
+            {
+                "limit": max(limit * 3, 12),
+                "kinds": profile.get("hippocampus_kinds"),
+                "min_importance": profile.get("hippocampus_min_importance", 0.55),
+                "recent_hours": profile.get("hippocampus_recent_hours", 24 * 7),
+            },
+        ),
+    ]
+    if profile.get("include_working"):
+        buckets.insert(
+            1,
+            (
+                "working",
+                {
+                    "limit": max(limit * 2, 6),
+                    "kinds": profile.get("working_kinds"),
+                    "min_importance": profile.get("working_min_importance", 0.2),
+                    "recent_hours": profile.get("working_recent_hours", 24 * 14),
+                },
+            ),
+        )
+    return buckets
 
 
 def load_payload() -> Dict[str, Any]:
@@ -168,13 +365,8 @@ def _coarse_recall_records(payload: Dict[str, Any]) -> List[Any]:
     query = str(payload.get("query") or "")
     limit = int(payload.get("limit", 5))
     context = payload.get("context") or {}
-
-    buckets = [
-        ("semantic", {"limit": max(limit * 6, 18), "kinds": ["semantic", "summary", "rule", "preference", "fact", "task"], "min_importance": 0.35, "recent_hours": 24 * 365}),
-        ("working", {"limit": max(limit * 2, 6), "min_importance": 0.2, "recent_hours": 24 * 14}),
-        ("episodic", {"limit": max(limit * 5, 15), "min_importance": 0.45, "recent_hours": 24 * 30}),
-        ("hippocampus", {"limit": max(limit * 3, 12), "min_importance": 0.55, "recent_hours": 24 * 7}),
-    ]
+    profile = _query_profile(query)
+    buckets = _bucket_plan(limit, profile)
 
     deduped: Dict[str, Any] = {}
     for bucket, options in buckets:
@@ -564,6 +756,7 @@ def build_context(payload: Dict[str, Any]) -> Dict[str, Any]:
     limit = int(payload.get("limit", 5))
     context = payload.get("context") or {}
     emotion = payload.get("emotion")
+    profile = _query_profile(query)
 
     coarse_records = _coarse_recall_records(payload)
     if coarse_records:
@@ -580,6 +773,7 @@ def build_context(payload: Dict[str, Any]) -> Dict[str, Any]:
             emotion=emotion,
             limit=max(limit * 4, 10),
         )
+        recalled = _filter_recalled_by_profile(recalled, profile)
         if brain._is_progress_query(query):
             summary = next(
                 (
@@ -627,6 +821,7 @@ def build_context(payload: Dict[str, Any]) -> Dict[str, Any]:
             max_estimated_tokens=payload.get("max_estimated_tokens"),
         )
         result["recall_mode"] = "full_snapshot"
+    result["query_profile"] = profile.get("name", "default")
     result["resolved_store_root"] = str(resolve_store(payload))
     result["debug"] = _build_context_debug(payload, result)
     return result
@@ -666,6 +861,7 @@ def _build_context_debug(payload: Dict[str, Any], result: Dict[str, Any]) -> Dic
     return {
         "query": _preview_text(payload.get("query") or "", 120),
         "backend": payload.get("backend", "jsonl"),
+        "query_profile": result.get("query_profile", "default"),
         "recall_mode": result.get("recall_mode", "unknown"),
         "candidate_count": int(result.get("candidate_count") or 0),
         "selected_count": int(result.get("count") or 0),

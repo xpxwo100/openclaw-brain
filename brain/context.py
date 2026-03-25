@@ -95,6 +95,8 @@ class BrainContextBuilder:
                 continue
             if self._is_trivial_text(normalized):
                 continue
+            if self._is_irrelevant(candidate, progress_query=progress_query) and not is_state_summary:
+                continue
             if self._is_recent_chat_echo(memory, recent_message_ids) and not is_state_summary:
                 continue
 
@@ -154,7 +156,7 @@ class BrainContextBuilder:
             "estimated_tokens": self._estimate_tokens(context_text),
         }
 
-    def _priority_key(self, candidate: RetrievedMemory, progress_query: bool = False) -> tuple[float, float, float, float, float, float, float]:
+    def _priority_key(self, candidate: RetrievedMemory, progress_query: bool = False) -> tuple[float, float, float, float, float, float, float, float]:
         memory = candidate.memory
         kind = getattr(memory, "kind", MemoryKind.EPISODIC)
         kind_value = kind.value if hasattr(kind, "value") else str(kind)
@@ -178,10 +180,26 @@ class BrainContextBuilder:
 
         importance = float(getattr(memory, "importance", 0.5))
         score = candidate.score.total()
+        relevance = float(getattr(candidate.score, "relevance", 0.0))
         recency = float(getattr(memory, "access_count", 0))
         freshness = self._freshness_score(memory)
         progress_boost = 1.0 if progress_query and source_subtype == "assistant_state_summary" else 0.0
-        return (progress_boost, assistant_priority, semantic_boost, score, importance, freshness, recency)
+        return (progress_boost, assistant_priority, relevance, score, semantic_boost, importance, freshness, recency)
+
+    def _is_irrelevant(self, candidate: RetrievedMemory, progress_query: bool = False) -> bool:
+        if progress_query:
+            return False
+
+        memory = candidate.memory
+        kind = getattr(memory, "kind", MemoryKind.EPISODIC)
+        kind_value = kind.value if hasattr(kind, "value") else str(kind)
+        relevance = float(getattr(candidate.score, "relevance", 0.0))
+        context_match = float(getattr(candidate.score, "context_match", 0.0))
+
+        if relevance >= 0.12 or context_match >= 0.5:
+            return False
+
+        return kind_value in {"working", "episodic", "semantic", "summary", "rule", "preference", "fact", "task"}
 
     def _is_recent_chat_echo(self, memory: Any, recent_message_ids: set[str]) -> bool:
         kind = getattr(memory, "kind", MemoryKind.EPISODIC)

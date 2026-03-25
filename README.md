@@ -76,6 +76,7 @@ This refactor fixes that by introducing:
 - `lancedb` backend for scalable retrieval workflows
 - LanceDB-backed coarse recall prefiltering for larger stores
 - Optional local embeddings for `episodic` and `semantic` recall
+- Intent-aware recall routing for resume, learning, debug, preference, and progress queries
 - Save/load support through `OpenClawBrain.save()` and `OpenClawBrain.load()`
 
 ### OpenClaw integration
@@ -191,6 +192,7 @@ Injects compact memory recall into system-prompt space during `before_prompt_bui
 - Doc: [`plugins/brain-prompt/README.md`](./plugins/brain-prompt/README.md)
 - Supports `backend`, `limit`, `recentWindow`, `maxChars`, and `maxEstimatedTokens`
 - Emits injection logs with candidate count, selected count, and estimated token usage
+- Uses query-intent routing so different prompts can use different bucket/kind filters before recall
 
 ### Intended runtime flow
 

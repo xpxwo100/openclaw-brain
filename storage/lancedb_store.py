@@ -59,7 +59,10 @@ class LanceMemoryStore:
             self.db.create_table(table_name, data=rows)
             return table_name
 
-        table = self.db.open_table(table_name)
+        table = self._open_table_safe(table_name)
+        if table is None:
+            self.db.create_table(table_name, data=rows)
+            return table_name
         ids = [row["id"] for row in rows if row.get("id")]
         if ids:
             escaped = [self._quote_sql(value) for value in ids]
@@ -71,7 +74,9 @@ class LanceMemoryStore:
         table_name = self._table_name(name)
         if table_name not in self._table_names():
             return []
-        table = self.db.open_table(table_name)
+        table = self._open_table_safe(table_name)
+        if table is None:
+            return []
         rows = table.to_arrow().to_pylist()
         records: List[MemoryRecord] = []
         for row in rows:
@@ -117,7 +122,9 @@ class LanceMemoryStore:
         query_embedding = embed_text(query) if query.strip() else []
 
         ranked: List[tuple[tuple[float, float, float, float], Dict[str, Any]]] = []
-        table = self.db.open_table(table_name)
+        table = self._open_table_safe(table_name)
+        if table is None:
+            return []
         rows = self._search_rows(table, query_embedding, limit=max(limit * 8, 24))
         for row in rows:
             importance = float(row.get("importance") or 0.0)
@@ -167,6 +174,12 @@ class LanceMemoryStore:
     def _table_names(self) -> List[str]:
         response = self.db.list_tables()
         return list(getattr(response, "tables", []) or [])
+
+    def _open_table_safe(self, table_name: str):
+        try:
+            return self.db.open_table(table_name)
+        except (ValueError, FileNotFoundError, OSError):
+            return None
 
     def _row(self, bucket: str, record: MemoryRecord) -> Dict[str, object]:
         data = record.to_dict()

@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import math
+import re
 import time
 from typing import Any, Dict, List, Optional
+
+_WORD_RE = re.compile(r"[A-Za-z0-9_]+", re.UNICODE)
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]+")
 
 
 class RetrievalScore:
@@ -114,9 +118,38 @@ class MemoryRetriever:
             return 0.0
         if query in content_lower:
             return 1.0
-        content_terms = set(content_lower.split())
-        matches = len(query_terms & content_terms)
-        return min(matches / max(1, len(query_terms)), 1.0)
+        query_tokens = self._tokenize(query)
+        content_tokens = self._tokenize(content_lower)
+        if not query_tokens or not content_tokens:
+            return 0.0
+
+        query_token_set = set(query_tokens)
+        content_token_set = set(content_tokens)
+        token_matches = len(query_token_set & content_token_set) / max(1, len(query_token_set))
+
+        query_ngrams = self._char_ngrams(query)
+        content_ngrams = self._char_ngrams(content_lower)
+        ngram_matches = 0.0
+        if query_ngrams and content_ngrams:
+            ngram_matches = len(query_ngrams & content_ngrams) / max(1, len(query_ngrams))
+
+        return min(max(token_matches, ngram_matches), 1.0)
+
+    def _tokenize(self, text: str) -> List[str]:
+        text = (text or "").lower()
+        tokens = [token for token in _WORD_RE.findall(text) if token]
+        for segment in _CJK_RE.findall(text):
+            if len(segment) == 1:
+                tokens.append(segment)
+                continue
+            tokens.extend(segment[index:index + 2] for index in range(len(segment) - 1))
+        return tokens
+
+    def _char_ngrams(self, text: str, size: int = 2) -> set[str]:
+        cleaned = re.sub(r"\s+", "", (text or "").lower())
+        if len(cleaned) < size:
+            return {cleaned} if cleaned else set()
+        return {cleaned[index:index + size] for index in range(len(cleaned) - size + 1)}
 
     def _calculate_recency(self, memory: Any, current_time: float) -> float:
         created_at = getattr(memory, "created_at", None)

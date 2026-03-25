@@ -22,6 +22,20 @@ const DEFAULT_CONFIG = {
   projectRoot: null,
 };
 
+function readDiskConfig() {
+  if (cachedDiskConfig) return cachedDiskConfig;
+
+  const configPath = findOpenClawConfigPath();
+  if (!configPath) return null;
+
+  try {
+    cachedDiskConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    return cachedDiskConfig;
+  } catch {
+    return null;
+  }
+}
+
 function readDirectPluginConfig(pluginConfig) {
   if (!pluginConfig || typeof pluginConfig !== "object" || Array.isArray(pluginConfig)) return {};
 
@@ -58,19 +72,8 @@ function findOpenClawConfigPath() {
 let cachedDiskConfig = null;
 
 function readPluginConfigFromDisk() {
-  if (cachedDiskConfig) {
-    return readNestedPluginConfig(cachedDiskConfig);
-  }
-
-  const configPath = findOpenClawConfigPath();
-  if (!configPath) return {};
-
-  try {
-    cachedDiskConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    return readNestedPluginConfig(cachedDiskConfig);
-  } catch {
-    return {};
-  }
+  const diskConfig = readDiskConfig();
+  return diskConfig ? readNestedPluginConfig(diskConfig) : {};
 }
 
 function normalizeConfig(pluginConfig) {
@@ -89,6 +92,15 @@ function resolvePythonBin() {
 function resolveProjectRoot(cfg = {}) {
   const explicit = cfg.projectRoot || process.env.OPENCLAW_BRAIN_PROJECT_ROOT;
   if (explicit) return path.resolve(String(explicit));
+  const projectCandidates = [
+    path.join(STATE_ROOT, "workspace", "projects", "openclaw-brain"),
+    path.join(STATE_ROOT, "projects", "openclaw-brain"),
+  ];
+  for (const candidate of projectCandidates) {
+    if (existsSync(path.join(candidate, "hooks", "brain_cli.py"))) {
+      return path.resolve(candidate);
+    }
+  }
   return PLUGIN_ROOT;
 }
 
@@ -97,8 +109,8 @@ function resolveCliPath(cfg = {}) {
   const candidates = [
     cfg.cliPath,
     process.env.OPENCLAW_BRAIN_CLI_PATH,
-    path.join(PLUGIN_ROOT, "hooks", "brain_cli.py"),
     path.join(projectRoot, "hooks", "brain_cli.py"),
+    path.join(PLUGIN_ROOT, "hooks", "brain_cli.py"),
     path.join(STATE_ROOT, "workspace", "projects", "openclaw-brain", "hooks", "brain_cli.py"),
     path.join(STATE_ROOT, "projects", "openclaw-brain", "hooks", "brain_cli.py"),
     path.join(STATE_ROOT, "hooks", "brain_cli.py"),
@@ -110,8 +122,36 @@ function resolveCliPath(cfg = {}) {
   return candidates[0];
 }
 
+function resolveWorkspaceDir(ctx = {}) {
+  const runtimeCandidates = [
+    ctx?.cfg?.workspace?.dir,
+    ctx?.workspace?.dir,
+    ctx?.agent?.workspace,
+    ctx?.session?.workspace,
+    process.env.OPENCLAW_WORKSPACE_DIR,
+  ].filter(Boolean);
+
+  if (runtimeCandidates.length > 0) {
+    return path.resolve(String(runtimeCandidates[0]));
+  }
+
+  const diskConfig = readDiskConfig();
+  const agentId = ctx?.agentId || ctx?.agent?.id || ctx?.session?.agentId;
+  const list = Array.isArray(diskConfig?.agents?.list) ? diskConfig.agents.list : [];
+  if (agentId) {
+    const matched = list.find((agent) => agent?.id === agentId && agent?.workspace);
+    if (matched?.workspace) return path.resolve(String(matched.workspace));
+  }
+
+  if (diskConfig?.agents?.defaults?.workspace) {
+    return path.resolve(String(diskConfig.agents.defaults.workspace));
+  }
+
+  return null;
+}
+
 function resolveStoreRoot(ctx = {}, cfg = {}) {
-  const workspaceDir = ctx?.cfg?.workspace?.dir || process.env.OPENCLAW_WORKSPACE_DIR;
+  const workspaceDir = resolveWorkspaceDir(ctx);
   if (workspaceDir) {
     return path.join(workspaceDir, "data", "openclaw-brain");
   }
@@ -214,12 +254,63 @@ function findLatestUserQuery(messages, minQueryLength) {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const msg = messages[i];
     if (getRole(msg) !== "user") continue;
-    const text = getMessageText(msg);
+    const text = normalizeRecallQuery(getMessageText(msg));
     if (text && text.trim().length >= minQueryLength) {
       return text.trim();
     }
   }
   return "";
+}
+
+function extractPromptQuery(prompt, minQueryLength) {
+  const text = normalizeRecallQuery(
+    Array.isArray(prompt)
+      ? extractTextParts(prompt).join("\n")
+      : getMessageText(prompt),
+  );
+
+  if (text && text.trim().length >= minQueryLength) {
+    return text.trim();
+  }
+  return "";
+}
+
+async function resolveLatestUserQuery(api, params, ctx, minQueryLength) {
+  const promptQuery = extractPromptQuery(params?.prompt, minQueryLength);
+  if (promptQuery) return promptQuery;
+
+  const messages = Array.isArray(params?.messages) ? params.messages : [];
+  const fallbackQuery = findLatestUserQuery(messages, minQueryLength);
+  const sessionKey = ctx?.sessionKey;
+  const getSessionMessages = api?.runtime?.subagent?.getSessionMessages;
+  if (!sessionKey || typeof getSessionMessages !== "function") {
+    return fallbackQuery;
+  }
+
+  try {
+    const response = await getSessionMessages({ sessionKey, limit: 12 });
+    const sessionMessages = Array.isArray(response?.messages) ? response.messages : [];
+    const sessionQuery = findLatestUserQuery(sessionMessages, minQueryLength);
+    return sessionQuery || fallbackQuery;
+  } catch {
+    return fallbackQuery;
+  }
+}
+
+function normalizeRecallQuery(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return "";
+
+  let normalized = raw
+    .replace(/(?:^|\n)(?:Conversation info|Sender)\s*\(untrusted metadata\):\s*```json[\s\S]*?```/gi, "\n")
+    .replace(/```json[\s\S]*?```/gi, "\n")
+    .replace(/\[Bootstrap truncation warning\][\s\S]*$/gi, "\n")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) return raw;
+  return normalized;
 }
 
 function normalizeHeading(text, fallback) {
@@ -254,7 +345,7 @@ const plugin = {
       if (!cfg.enabled) return {};
 
       const messages = Array.isArray(params?.messages) ? params.messages : [];
-      const query = findLatestUserQuery(messages, cfg.minQueryLength);
+      const query = await resolveLatestUserQuery(api, params, ctx, cfg.minQueryLength);
       if (!query) return {};
 
       const recent = collectRecentMessages(messages, cfg.recentWindow);
@@ -279,7 +370,7 @@ const plugin = {
         }, cfg);
 
         if (!result?.context_text) {
-          api.logger?.debug?.(
+          api.logger?.info?.(
             `brain-prompt recall empty (backend: ${cfg.backend}, query: ${JSON.stringify(query)}, mode: ${result?.recall_mode || "unknown"}, candidates: ${result?.candidate_count || 0}, store: ${result?.resolved_store_root || "brain store"})`,
           );
           return {};
@@ -312,5 +403,6 @@ export {
   getMessageId,
   getRole,
   collectRecentMessages,
+  extractPromptQuery,
   findLatestUserQuery,
 };
